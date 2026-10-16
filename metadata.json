@@ -1,0 +1,10 @@
+{
+  "name": "Remix Archivo Pro Desktop",
+  "description": "An advanced, secure local archiving system with multi-device sync, document scanning, and professional enterprise-grade management tools.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
