@@ -42,6 +42,8 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
     switch (activeTab) {
       case 'dashboard':
         return t.navDashboard;
+      case 'folders':
+        return t.navFolders;
       case 'documents':
         return t.navDocuments;
       case 'scanner':

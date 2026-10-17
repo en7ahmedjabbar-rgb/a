@@ -1,32 +1,53 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { AppProvider, useApp } from './context/AppContext';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
+import { LoginView } from './components/auth/LoginView';
+import { FoldersView } from './components/folders/FoldersView';
 import { DashboardOverview } from './components/dashboard/DashboardOverview';
 import { DocumentList } from './components/documents/DocumentList';
 import { DocumentDetailModal } from './components/documents/DocumentDetailModal';
 import { DocumentFormModal } from './components/documents/DocumentFormModal';
 import { DocumentScannerModal } from './components/scanner/DocumentScannerModal';
 import { MobileSyncModal } from './components/sync/MobileSyncModal';
-import { AnalyticsDashboard } from './components/analytics/AnalyticsDashboard';
-import { SecurityAuditView } from './components/security/SecurityAuditView';
-import { SupportTicketsView } from './components/support/SupportTicketsView';
-import { ApiExplorerView } from './components/api/ApiExplorerView';
-import { DiagnosticsView } from './components/diagnostics/DiagnosticsView';
+import { UsersPermissionsView } from './components/users/UsersPermissionsView';
 import { BackupModal } from './components/backup/BackupModal';
 import { TwoFactorModal } from './components/auth/TwoFactorModal';
 import { ArchiveDocument } from './types';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
 
 const MainAppContent: React.FC = () => {
-  const { activeTab, setActiveTab, language } = useApp();
+  const { activeTab, setActiveTab, language, isAuthenticated, documents } = useApp();
   const isOnline = useOnlineStatus();
   const isArabic = language === 'ar';
 
   const [isMobileOpen, setIsMobileOpen] = useState(false);
 
-  // Modals state
-  const [selectedDocForDetail, setSelectedDocForDetail] = useState<ArchiveDocument | null>(null);
+  // Modals state - persistent document viewing across updates
+  const [selectedDocIdForDetail, setSelectedDocIdForDetail] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('arsheef_viewing_doc_id') || null;
+    } catch {
+      return null;
+    }
+  });
+
+  const selectedDocForDetail = useMemo(() => {
+    if (!selectedDocIdForDetail) return null;
+    return documents.find(d => d.id === selectedDocIdForDetail) || null;
+  }, [documents, selectedDocIdForDetail]);
+
+  const handleOpenDocDetail = (doc: ArchiveDocument | null) => {
+    setSelectedDocIdForDetail(doc ? doc.id : null);
+    try {
+      if (doc) {
+        localStorage.setItem('arsheef_viewing_doc_id', doc.id);
+      } else {
+        localStorage.removeItem('arsheef_viewing_doc_id');
+      }
+    } catch {}
+  };
+
   const [selectedDocForEdit, setSelectedDocForEdit] = useState<ArchiveDocument | null>(null);
   const [isNewDocModalOpen, setIsNewDocModalOpen] = useState(false);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
@@ -36,6 +57,11 @@ const MainAppContent: React.FC = () => {
     ocrText: string;
     imagePreview: string;
   } | null>(null);
+
+  // If user is not authenticated, render dedicated enterprise login view
+  if (!isAuthenticated) {
+    return <LoginView />;
+  }
 
   const handleScannerSave = (data: { title: string; ocrText: string; imagePreview: string }) => {
     setScannedTransferData(data);
@@ -54,11 +80,20 @@ const MainAppContent: React.FC = () => {
             onOpenBackup={() => setActiveTab('backup')}
           />
         );
+      case 'folders':
+        return (
+          <FoldersView
+            onOpenDocument={doc => handleOpenDocDetail(doc)}
+            onOpenNewDocInFolder={(folderId, folderName) => {
+              setIsNewDocModalOpen(true);
+            }}
+          />
+        );
       case 'documents':
         return (
           <DocumentList
             onOpenNewDocModal={() => setIsNewDocModalOpen(true)}
-            onSelectDocument={doc => setSelectedDocForDetail(doc)}
+            onSelectDocument={doc => handleOpenDocDetail(doc)}
             onEditDocument={doc => setSelectedDocForEdit(doc)}
           />
         );
@@ -77,16 +112,8 @@ const MainAppContent: React.FC = () => {
             <MobileSyncModal onClose={() => setActiveTab('dashboard')} />
           </div>
         );
-      case 'analytics':
-        return <AnalyticsDashboard />;
-      case 'security':
-        return <SecurityAuditView />;
-      case 'support':
-        return <SupportTicketsView />;
-      case 'api':
-        return <ApiExplorerView />;
-      case 'diagnostics':
-        return <DiagnosticsView />;
+      case 'users':
+        return <UsersPermissionsView />;
       case 'backup':
         return <BackupModal />;
       default:
@@ -127,9 +154,9 @@ const MainAppContent: React.FC = () => {
       {selectedDocForDetail && (
         <DocumentDetailModal
           document={selectedDocForDetail}
-          onClose={() => setSelectedDocForDetail(null)}
+          onClose={() => handleOpenDocDetail(null)}
           onEdit={doc => {
-            setSelectedDocForDetail(null);
+            handleOpenDocDetail(null);
             setSelectedDocForEdit(doc);
           }}
         />
@@ -148,7 +175,6 @@ const MainAppContent: React.FC = () => {
             setIsNewDocModalOpen(false);
             setSelectedDocForEdit(null);
             setScannedTransferData(null);
-            setActiveTab('documents');
           }}
         />
       )}

@@ -62,6 +62,14 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
         {/* Quick Action Buttons */}
         <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            onClick={() => setActiveTab('folders')}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-semibold backdrop-blur-xs transition active:scale-95 cursor-pointer whitespace-nowrap"
+          >
+            <span>📁</span>
+            <span>{t.navFolders}</span>
+          </button>
+
           {hasPermission('create') && (
             <button
               onClick={onOpenNewDocModal}

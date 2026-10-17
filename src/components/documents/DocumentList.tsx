@@ -2,7 +2,6 @@ import React, { useState, useMemo } from 'react';
 import {
   Search,
   Filter,
-  Download,
   FileSpreadsheet,
   Printer,
   Plus,
@@ -10,17 +9,15 @@ import {
   Edit2,
   Trash2,
   FileText,
-  Shield,
   MapPin,
-  Calendar,
-  Tag,
-  CheckCircle,
-  Clock,
-  Layers,
-  ChevronDown,
+  Folder,
+  CheckSquare,
+  Square,
+  AlertTriangle,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { ArchiveDocument, DocumentClassification, DocumentStatus } from '../../types';
+import { DeleteConfirmModal } from '../common/DeleteConfirmModal';
 
 interface DocumentListProps {
   onOpenNewDocModal: () => void;
@@ -33,19 +30,26 @@ export const DocumentList: React.FC<DocumentListProps> = ({
   onSelectDocument,
   onEditDocument,
 }) => {
-  const { documents, deleteDocument, t, language, hasPermission, logAuditEvent } = useApp();
+  const { documents, folders, deleteDocument, deleteDocumentsBulk, t, language, hasPermission, logAuditEvent } = useApp();
   const isArabic = language === 'ar';
 
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedFolder, setSelectedFolder] = useState<string>('ALL');
   const [selectedDept, setSelectedDept] = useState('ALL');
   const [selectedClass, setSelectedClass] = useState<string>('ALL');
   const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
-  const [viewMode, setViewMode] = useState<'table' | 'grid'>('table');
+
+  // Multi-selection state for bulk delete
+  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
+  const [docToDelete, setDocToDelete] = useState<ArchiveDocument | null>(null);
+  const [isBulkDeleteModalOpen, setIsBulkDeleteModalOpen] = useState(false);
 
   // Unique departments for filter
   const departments = useMemo(() => {
     const set = new Set<string>();
-    documents.forEach(d => set.add(d.department));
+    documents.forEach(d => {
+      if (d.department) set.add(d.department);
+    });
     return Array.from(set);
   }, [documents]);
 
@@ -58,21 +62,39 @@ export const DocumentList: React.FC<DocumentListProps> = ({
         doc.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
         doc.physicalLocation.toLowerCase().includes(searchTerm.toLowerCase()) ||
         doc.tags.some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (doc.folderName && doc.folderName.toLowerCase().includes(searchTerm.toLowerCase())) ||
         (doc.ocrText && doc.ocrText.toLowerCase().includes(searchTerm.toLowerCase()));
 
-      const matchDept = selectedDept === 'ALL' || doc.department === selectedDept;
+      const matchFolder = selectedFolder === 'ALL' || doc.folderId === selectedFolder;
       const matchClass = selectedClass === 'ALL' || doc.classification === selectedClass;
       const matchStatus = selectedStatus === 'ALL' || doc.status === selectedStatus;
 
-      return matchSearch && matchDept && matchClass && matchStatus;
+      return matchSearch && matchFolder && matchClass && matchStatus;
     });
-  }, [documents, searchTerm, selectedDept, selectedClass, selectedStatus]);
+  }, [documents, searchTerm, selectedFolder, selectedClass, selectedStatus]);
+
+  // Checkbox toggle helpers
+  const handleToggleSelectDoc = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSelectedDocIds(prev =>
+      prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleToggleSelectAll = () => {
+    if (selectedDocIds.length === filteredDocs.length && filteredDocs.length > 0) {
+      setSelectedDocIds([]);
+    } else {
+      setSelectedDocIds(filteredDocs.map(d => d.id));
+    }
+  };
 
   // Export to Excel / CSV with UTF-8 BOM
   const handleExportCSV = () => {
     const headers = [
       'Document Code',
       'Title',
+      'Folder',
       'Category',
       'Department',
       'Classification',
@@ -82,9 +104,14 @@ export const DocumentList: React.FC<DocumentListProps> = ({
       'SHA256 Hash',
     ];
 
-    const rows = filteredDocs.map(d => [
+    const targetList = selectedDocIds.length > 0
+      ? filteredDocs.filter(d => selectedDocIds.includes(d.id))
+      : filteredDocs;
+
+    const rows = targetList.map(d => [
       `"${d.code}"`,
       `"${d.title.replace(/"/g, '""')}"`,
+      `"${(d.folderName || '').replace(/"/g, '""')}"`,
       `"${d.category.replace(/"/g, '""')}"`,
       `"${d.department.replace(/"/g, '""')}"`,
       `"${d.classification}"`,
@@ -104,7 +131,7 @@ export const DocumentList: React.FC<DocumentListProps> = ({
     link.click();
     document.body.removeChild(link);
 
-    logAuditEvent('EXPORT', 'EXCEL_CSV_EXPORT', `تصدير ${filteredDocs.length} وثيقة إلى ملف Excel/CSV`);
+    logAuditEvent('EXPORT', 'EXCEL_CSV_EXPORT', `تصدير ${targetList.length} وثيقة إلى ملف Excel/CSV`);
   };
 
   // Printable Register
@@ -113,13 +140,7 @@ export const DocumentList: React.FC<DocumentListProps> = ({
     logAuditEvent('EXPORT', 'PRINT_REGISTER', `طباعة سجل الأرشيف لـ ${filteredDocs.length} وثيقة`);
   };
 
-  const handleDelete = async (doc: ArchiveDocument, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (window.confirm(isArabic ? `هل تؤكد حذف الوثيقة ${doc.code} نهائياً؟` : `Are you sure you want to delete ${doc.code}?`)) {
-      await deleteDocument(doc.id);
-    }
-  };
-
+  // Classification styling
   const getClassificationBadge = (cls: DocumentClassification) => {
     switch (cls) {
       case 'top_secret':
@@ -149,6 +170,7 @@ export const DocumentList: React.FC<DocumentListProps> = ({
     }
   };
 
+  // Status styling
   const getStatusBadge = (st: DocumentStatus) => {
     switch (st) {
       case 'active':
@@ -178,8 +200,10 @@ export const DocumentList: React.FC<DocumentListProps> = ({
     }
   };
 
+  const isAllSelected = filteredDocs.length > 0 && selectedDocIds.length === filteredDocs.length;
+
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       {/* Search & Actions Toolbar */}
       <div className="p-4 rounded-2xl bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-3">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
@@ -233,24 +257,33 @@ export const DocumentList: React.FC<DocumentListProps> = ({
           </div>
         </div>
 
-        {/* Filter Row */}
+        {/* Filters Row */}
         <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-neutral-100 dark:border-neutral-800 text-xs">
           <div className="flex items-center gap-1 text-neutral-500 text-[11px] font-medium me-1">
             <Filter className="w-3 h-3" />
             <span>{isArabic ? 'تصفية:' : 'Filters:'}</span>
           </div>
 
-          {/* Department Filter */}
-          <select
-            value={selectedDept}
-            onChange={e => setSelectedDept(e.target.value)}
-            className="px-2.5 py-1 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 text-xs cursor-pointer focus:ring-1 focus:ring-blue-500"
-          >
-            <option value="ALL">{isArabic ? 'كافة الإدارات' : 'All Departments'}</option>
-            {departments.map(dept => (
-              <option key={dept} value={dept}>{dept}</option>
-            ))}
-          </select>
+          {/* Exclusive Folders Filter */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] font-bold text-neutral-500 hidden sm:inline">
+              {isArabic ? 'المجلد الأرشيفي:' : 'Folder:'}
+            </span>
+            <select
+              value={selectedFolder}
+              onChange={e => setSelectedFolder(e.target.value)}
+              className="px-3 py-1.5 rounded-xl border border-blue-200 dark:border-blue-900/60 bg-blue-50/40 dark:bg-blue-950/20 text-neutral-900 dark:text-neutral-100 text-xs font-semibold cursor-pointer focus:ring-2 focus:ring-blue-500 shadow-xs"
+            >
+              <option value="ALL">
+                {isArabic ? `📁 كافة المجلدات الأرشيفية (عرض الكل)` : `📁 All Folders (${folders.length})`}
+              </option>
+              {folders.map(f => (
+                <option key={f.id} value={f.id}>
+                  📁 {f.name} ({f.code})
+                </option>
+              ))}
+            </select>
+          </div>
 
           {/* Classification Filter */}
           <select
@@ -284,6 +317,35 @@ export const DocumentList: React.FC<DocumentListProps> = ({
         </div>
       </div>
 
+      {/* Bulk Action Toolbar if items are selected */}
+      {selectedDocIds.length > 0 && (
+        <div className="p-3 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900/60 flex items-center justify-between gap-3 text-xs animate-in fade-in duration-150">
+          <div className="flex items-center gap-2 font-semibold text-blue-900 dark:text-blue-200">
+            <span className="font-mono tabular-nums">{selectedDocIds.length}</span>
+            <span>{t.selectedCount}</span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {hasPermission('delete') && (
+              <button
+                onClick={() => setIsBulkDeleteModalOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold transition cursor-pointer shadow-xs"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{t.bulkDelete}</span>
+              </button>
+            )}
+
+            <button
+              onClick={() => setSelectedDocIds([])}
+              className="px-3 py-1.5 rounded-lg border border-neutral-300 dark:border-neutral-700 text-neutral-700 dark:text-neutral-300 hover:bg-white dark:hover:bg-neutral-800 transition cursor-pointer"
+            >
+              {isArabic ? 'إلغاء التحديد' : 'Deselect All'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Document List Presentation */}
       {filteredDocs.length === 0 ? (
         <div className="p-12 text-center rounded-2xl bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800">
@@ -301,110 +363,192 @@ export const DocumentList: React.FC<DocumentListProps> = ({
             <table className="w-full text-start border-collapse text-xs">
               <thead>
                 <tr className="bg-neutral-50/80 dark:bg-neutral-800/60 border-b border-neutral-200 dark:border-neutral-800 text-neutral-500 dark:text-neutral-400 font-semibold text-[11px]">
-                  <th className="py-3 px-4 text-start">{t.docCode}</th>
-                  <th className="py-3 px-4 text-start">{t.docTitle}</th>
-                  <th className="py-3 px-4 text-start hidden md:table-cell">{t.docDepartment}</th>
-                  <th className="py-3 px-4 text-start">{t.docClassification}</th>
-                  <th className="py-3 px-4 text-start hidden lg:table-cell">{t.docPhysicalLocation}</th>
-                  <th className="py-3 px-4 text-start hidden sm:table-cell">{t.docDate}</th>
-                  <th className="py-3 px-4 text-start">{t.docStatus}</th>
-                  <th className="py-3 px-4 text-end">{t.docActions}</th>
+                  <th className="py-3 px-3 w-8 text-center" onClick={e => e.stopPropagation()}>
+                    <button
+                      type="button"
+                      onClick={handleToggleSelectAll}
+                      className="cursor-pointer text-neutral-400 hover:text-blue-600 transition"
+                      aria-label="Select all documents"
+                    >
+                      {isAllSelected ? (
+                        <CheckSquare className="w-4 h-4 text-blue-600" />
+                      ) : (
+                        <Square className="w-4 h-4" />
+                      )}
+                    </button>
+                  </th>
+                  <th className="py-3 px-3 text-start">{t.docCode}</th>
+                  <th className="py-3 px-3 text-start">{t.docTitle}</th>
+                  <th className="py-3 px-3 text-start hidden sm:table-cell">{isArabic ? 'المجلد الأرشيفي' : 'Folder'}</th>
+                  <th className="py-3 px-3 text-start hidden md:table-cell">{t.docDepartment}</th>
+                  <th className="py-3 px-3 text-start">{t.docClassification}</th>
+                  <th className="py-3 px-3 text-start hidden lg:table-cell">{t.docPhysicalLocation}</th>
+                  <th className="py-3 px-3 text-start hidden sm:table-cell">{t.docDate}</th>
+                  <th className="py-3 px-3 text-start">{t.docStatus}</th>
+                  <th className="py-3 px-3 text-end">{t.docActions}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                {filteredDocs.map(doc => (
-                  <tr
-                    key={doc.id}
-                    onClick={() => onSelectDocument(doc)}
-                    className="hover:bg-neutral-50/70 dark:hover:bg-neutral-800/40 transition cursor-pointer"
-                  >
-                    {/* Code */}
-                    <td className="py-3.5 px-4 font-mono font-bold text-blue-600 dark:text-blue-400 whitespace-nowrap">
-                      {doc.code}
-                    </td>
+                {filteredDocs.map(doc => {
+                  const isSelected = selectedDocIds.includes(doc.id);
 
-                    {/* Title & tags */}
-                    <td className="py-3.5 px-4 max-w-xs">
-                      <div className="font-semibold text-neutral-900 dark:text-neutral-100 line-clamp-1">
-                        {doc.title}
-                      </div>
-                      <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-neutral-400">
-                        <span>{doc.category}</span>
-                        {doc.tags.length > 0 && (
-                          <>
-                            <span>·</span>
-                            <span className="truncate max-w-[150px]">{doc.tags.join(', ')}</span>
-                          </>
-                        )}
-                      </div>
-                    </td>
-
-                    {/* Department */}
-                    <td className="py-3.5 px-4 text-neutral-600 dark:text-neutral-300 hidden md:table-cell whitespace-nowrap">
-                      {doc.department}
-                    </td>
-
-                    {/* Classification */}
-                    <td className="py-3.5 px-4 whitespace-nowrap">
-                      {getClassificationBadge(doc.classification)}
-                    </td>
-
-                    {/* Physical Location */}
-                    <td className="py-3.5 px-4 text-neutral-500 hidden lg:table-cell text-[11px] truncate max-w-[180px]">
-                      <span className="flex items-center gap-1">
-                        <MapPin className="w-3 h-3 shrink-0 text-neutral-400" />
-                        <span className="truncate">{doc.physicalLocation}</span>
-                      </span>
-                    </td>
-
-                    {/* Document Date */}
-                    <td className="py-3.5 px-4 font-mono text-[11px] text-neutral-500 hidden sm:table-cell whitespace-nowrap">
-                      {doc.documentDate}
-                    </td>
-
-                    {/* Status */}
-                    <td className="py-3.5 px-4 whitespace-nowrap">
-                      {getStatusBadge(doc.status)}
-                    </td>
-
-                    {/* Actions */}
-                    <td className="py-3.5 px-4 text-end whitespace-nowrap">
-                      <div className="flex items-center justify-end gap-1" onClick={e => e.stopPropagation()}>
+                  return (
+                    <tr
+                      key={doc.id}
+                      onClick={() => onSelectDocument(doc)}
+                      className={`hover:bg-neutral-50/70 dark:hover:bg-neutral-800/40 transition cursor-pointer ${
+                        isSelected ? 'bg-blue-50/50 dark:bg-blue-950/20' : ''
+                      }`}
+                    >
+                      {/* Checkbox */}
+                      <td className="py-3 px-3 text-center" onClick={e => handleToggleSelectDoc(doc.id, e)}>
                         <button
-                          onClick={() => onSelectDocument(doc)}
-                          className="p-1.5 rounded-lg text-neutral-500 hover:text-blue-600 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition cursor-pointer"
-                          title={t.viewDetails}
+                          type="button"
+                          className="cursor-pointer text-neutral-400 hover:text-blue-600 transition"
                         >
-                          <Eye className="w-3.5 h-3.5" />
+                          {isSelected ? (
+                            <CheckSquare className="w-4 h-4 text-blue-600" />
+                          ) : (
+                            <Square className="w-4 h-4" />
+                          )}
                         </button>
+                      </td>
 
-                        {hasPermission('edit') && (
-                          <button
-                            onClick={() => onEditDocument(doc)}
-                            className="p-1.5 rounded-lg text-neutral-500 hover:text-amber-600 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition cursor-pointer"
-                            title={t.edit}
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
+                      {/* Code */}
+                      <td className="py-3.5 px-3 font-mono font-bold text-blue-600 dark:text-blue-400 whitespace-nowrap">
+                        {doc.code}
+                      </td>
 
-                        {hasPermission('delete') && (
-                          <button
-                            onClick={e => handleDelete(doc, e)}
-                            className="p-1.5 rounded-lg text-neutral-500 hover:text-red-600 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition cursor-pointer"
-                            title={t.delete}
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                      {/* Title & category */}
+                      <td className="py-3.5 px-3 max-w-xs">
+                        <div className="font-semibold text-neutral-900 dark:text-neutral-100 line-clamp-1">
+                          {doc.title}
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-neutral-400">
+                          <span>{doc.category}</span>
+                          {doc.tags.length > 0 && (
+                            <>
+                              <span>·</span>
+                              <span className="truncate max-w-[140px]">{doc.tags.join(', ')}</span>
+                            </>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* Folder Name */}
+                      <td className="py-3.5 px-3 hidden sm:table-cell whitespace-nowrap">
+                        {doc.folderName ? (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-neutral-700 dark:text-neutral-300">
+                            <Folder className="w-3 h-3 text-amber-500 shrink-0" />
+                            <span className="truncate max-w-[130px]">{doc.folderName}</span>
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-neutral-400 italic">
+                            {isArabic ? 'أرشيف عام' : 'Unassigned'}
+                          </span>
                         )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+
+                      {/* Department */}
+                      <td className="py-3.5 px-3 text-neutral-600 dark:text-neutral-300 hidden md:table-cell whitespace-nowrap">
+                        {doc.department}
+                      </td>
+
+                      {/* Classification */}
+                      <td className="py-3.5 px-3 whitespace-nowrap">
+                        {getClassificationBadge(doc.classification)}
+                      </td>
+
+                      {/* Physical Location */}
+                      <td className="py-3.5 px-3 text-neutral-500 hidden lg:table-cell text-[11px] truncate max-w-[170px]">
+                        <span className="flex items-center gap-1">
+                          <MapPin className="w-3 h-3 shrink-0 text-neutral-400" />
+                          <span className="truncate">{doc.physicalLocation}</span>
+                        </span>
+                      </td>
+
+                      {/* Document Date */}
+                      <td className="py-3.5 px-3 font-mono text-[11px] text-neutral-500 hidden sm:table-cell whitespace-nowrap">
+                        {doc.documentDate}
+                      </td>
+
+                      {/* Status */}
+                      <td className="py-3.5 px-3 whitespace-nowrap">
+                        {getStatusBadge(doc.status)}
+                      </td>
+
+                      {/* Actions */}
+                      <td className="py-3.5 px-3 text-end whitespace-nowrap">
+                        <div className="flex items-center justify-end gap-1" onClick={e => e.stopPropagation()}>
+                          <button
+                            onClick={() => onSelectDocument(doc)}
+                            className="p-1.5 rounded-lg text-neutral-500 hover:text-blue-600 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition cursor-pointer"
+                            title={t.viewDetails}
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                          </button>
+
+                          {hasPermission('edit') && (
+                            <button
+                              onClick={() => onEditDocument(doc)}
+                              className="p-1.5 rounded-lg text-neutral-500 hover:text-amber-600 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition cursor-pointer"
+                              title={t.edit}
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+
+                          {hasPermission('delete') && (
+                            <button
+                              onClick={() => setDocToDelete(doc)}
+                              className="p-1.5 rounded-lg text-neutral-500 hover:text-red-600 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition cursor-pointer"
+                              title={t.delete}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         </div>
+      )}
+
+      {/* Single Document Delete Confirmation Modal */}
+      {docToDelete && (
+        <DeleteConfirmModal
+          isOpen={Boolean(docToDelete)}
+          title={isArabic ? 'تأكيد حذف الوثيقة نهائياً' : 'Confirm Permanent Document Deletion'}
+          itemCode={docToDelete.code}
+          itemName={docToDelete.title}
+          description={isArabic ? 'سيتم مسح بيانات الوثيقة وملفاتها المرفقة من قاعدة البيانات المحلية المشفرة وتوثيق العملية في سجل التدقيق.' : 'Document record and files will be permanently removed from local database.'}
+          onConfirm={async () => {
+            await deleteDocument(docToDelete.id);
+            setSelectedDocIds(prev => prev.filter(id => id !== docToDelete.id));
+            setDocToDelete(null);
+          }}
+          onClose={() => setDocToDelete(null)}
+        />
+      )}
+
+      {/* Bulk Delete Confirmation Modal */}
+      {isBulkDeleteModalOpen && (
+        <DeleteConfirmModal
+          isOpen={isBulkDeleteModalOpen}
+          title={isArabic ? `تأكيد حذف ${selectedDocIds.length} وثيقة دفعة واحدة` : `Confirm Bulk Delete of ${selectedDocIds.length} Documents`}
+          itemName={isArabic ? `${selectedDocIds.length} وثيقة أرشيفية محددة` : `${selectedDocIds.length} selected documents`}
+          description={t.confirmBulkDelete}
+          onConfirm={async () => {
+            await deleteDocumentsBulk(selectedDocIds);
+            setSelectedDocIds([]);
+            setIsBulkDeleteModalOpen(false);
+          }}
+          onClose={() => setIsBulkDeleteModalOpen(false)}
+        />
       )}
     </div>
   );

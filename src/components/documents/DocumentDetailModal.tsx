@@ -14,9 +14,12 @@ import {
   Download,
   AlertCircle,
   Hash,
+  Trash2,
+  Folder,
 } from 'lucide-react';
 import { ArchiveDocument } from '../../types';
 import { useApp } from '../../context/AppContext';
+import { DeleteConfirmModal } from '../common/DeleteConfirmModal';
 
 interface DocumentDetailModalProps {
   document: ArchiveDocument | null;
@@ -29,9 +32,10 @@ export const DocumentDetailModal: React.FC<DocumentDetailModalProps> = ({
   onClose,
   onEdit,
 }) => {
-  const { t, language, hasPermission, logAuditEvent } = useApp();
+  const { deleteDocument, t, language, hasPermission, logAuditEvent } = useApp();
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [copiedHash, setCopiedHash] = useState(false);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const isArabic = language === 'ar';
 
   useEffect(() => {
@@ -106,6 +110,16 @@ export const DocumentDetailModal: React.FC<DocumentDetailModalProps> = ({
               </button>
             )}
 
+            {hasPermission('delete') && (
+              <button
+                onClick={() => setIsDeleteModalOpen(true)}
+                className="p-1.5 rounded-lg text-neutral-400 hover:text-red-600 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition cursor-pointer"
+                title={t.delete}
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            )}
+
             <button
               onClick={onClose}
               className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition cursor-pointer"
@@ -127,6 +141,15 @@ export const DocumentDetailModal: React.FC<DocumentDetailModalProps> = ({
                 {document.title}
               </h2>
               <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500 mt-2">
+                {document.folderName && (
+                  <>
+                    <span className="inline-flex items-center gap-1 font-semibold text-blue-600 dark:text-blue-400">
+                      <Folder className="w-3 h-3 text-amber-500" />
+                      <span>{document.folderName}</span>
+                    </span>
+                    <span aria-hidden="true">·</span>
+                  </>
+                )}
                 <span>{document.department}</span>
                 <span aria-hidden="true">·</span>
                 <span>{document.category}</span>
@@ -218,6 +241,132 @@ export const DocumentDetailModal: React.FC<DocumentDetailModalProps> = ({
             </p>
           </div>
 
+          {/* Internal Uploads & File Attachments (Word, Excel, PDF, Images) */}
+          <div className="p-4 rounded-xl border border-blue-200/80 dark:border-blue-900/40 bg-blue-50/40 dark:bg-blue-950/20">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Paperclip className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                <h3 className="text-xs font-bold text-neutral-900 dark:text-white">
+                  {isArabic ? 'الملفات والمرفقات المحفوظة داخلياً' : 'Internal Attachments & Documents'}
+                </h3>
+                <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 dark:bg-blue-900/60 dark:text-blue-300 text-[10px] font-bold">
+                  {(document.attachments || []).length} {isArabic ? 'ملفات' : 'files'}
+                </span>
+              </div>
+
+              {/* Upload New Internal File */}
+              <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold cursor-pointer shadow-xs transition">
+                <Upload className="w-3.5 h-3.5" />
+                <span>{isArabic ? 'رفع ملف داخلي جديد' : 'Upload File'}</span>
+                <input
+                  type="file"
+                  multiple
+                  accept=".pdf,.docx,.doc,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.webp,.txt"
+                  onChange={handleInternalFileUpload}
+                  className="hidden"
+                />
+              </label>
+            </div>
+
+            {/* List of Attachments */}
+            {(!document.attachments || document.attachments.length === 0) ? (
+              <div className="p-6 text-center border-2 border-dashed border-neutral-200 dark:border-neutral-800 rounded-xl bg-white/60 dark:bg-neutral-900/40">
+                <FileText className="w-8 h-8 text-neutral-300 dark:text-neutral-600 mx-auto mb-2" />
+                <p className="text-xs text-neutral-500 mb-1">
+                  {isArabic ? 'لا توجد ملفات مرفقة محفوظة لهذه الوثيقة حالياً' : 'No attached files in this archive record'}
+                </p>
+                <p className="text-[11px] text-neutral-400">
+                  {isArabic ? 'يدعم مستندات Word (.docx) وجداول Excel (.xlsx) و PDF والصور' : 'Supports Word, Excel, PDF, and Images'}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {document.attachments.map(att => {
+                  const ext = att.name.split('.').pop()?.toLowerCase() || '';
+                  const isWord = ext === 'docx' || ext === 'doc';
+                  const isExcel = ext === 'xlsx' || ext === 'xls' || ext === 'csv';
+                  const isPdf = ext === 'pdf';
+                  const isImg = ['png', 'jpg', 'jpeg', 'webp', 'svg'].includes(ext);
+
+                  return (
+                    <div
+                      key={att.id}
+                      className="flex items-center justify-between gap-3 p-3 rounded-xl bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 shadow-xs hover:border-blue-300 dark:hover:border-blue-800 transition"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        {/* File Type Icon */}
+                        <div
+                          className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                            isWord
+                              ? 'bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300'
+                              : isExcel
+                              ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                              : isPdf
+                              ? 'bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-300'
+                              : isImg
+                              ? 'bg-purple-100 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300'
+                              : 'bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300'
+                          }`}
+                        >
+                          {isWord && <FileText className="w-4 h-4 text-blue-600" />}
+                          {isExcel && <FileSpreadsheet className="w-4 h-4 text-emerald-600" />}
+                          {isPdf && <FileText className="w-4 h-4 text-red-600" />}
+                          {isImg && <ImageIcon className="w-4 h-4 text-purple-600" />}
+                          {!isWord && !isExcel && !isPdf && !isImg && <FileCode className="w-4 h-4" />}
+                        </div>
+
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-neutral-900 dark:text-white truncate">
+                            {att.name}
+                          </p>
+                          <span className="text-[10px] text-neutral-400 font-mono">
+                            {(att.size / 1024).toFixed(1)} KB · {new Date(att.uploadedAt).toLocaleDateString()}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Action buttons */}
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {/* Read / Preview in Reader */}
+                        <button
+                          type="button"
+                          onClick={() => setSelectedAttachmentForReader(att)}
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/50 dark:hover:bg-blue-900 text-blue-700 dark:text-blue-300 text-xs font-semibold cursor-pointer transition"
+                          title={isArabic ? 'قراءة وعرض الملف المباشر (وورد، إكسل، PDF، صور)' : 'Preview File'}
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>{isArabic ? 'قراءة وعرض' : 'Preview'}</span>
+                        </button>
+
+                        {/* Direct Download Button ("نظام تحميل داخلي") */}
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadFile(att)}
+                          className="p-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer transition"
+                          title={isArabic ? 'تحميل الملف داخلياً على جهازك' : 'Download to device'}
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                        </button>
+
+                        {/* Delete Attachment */}
+                        {hasPermission('delete') && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteAttachment(att.id)}
+                            className="p-1.5 rounded-lg text-neutral-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer transition"
+                            title={isArabic ? 'حذف هذا المرفق' : 'Delete file'}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           {/* Versions History */}
           <div>
             <h3 className="text-xs font-bold text-neutral-900 dark:text-white mb-2 flex items-center gap-1.5">
@@ -247,6 +396,23 @@ export const DocumentDetailModal: React.FC<DocumentDetailModalProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {isDeleteModalOpen && (
+        <DeleteConfirmModal
+          isOpen={isDeleteModalOpen}
+          title={isArabic ? 'تأكيد حذف الوثيقة نهائياً' : 'Confirm Permanent Deletion'}
+          itemCode={document.code}
+          itemName={document.title}
+          description={isArabic ? 'هل أنت متأكد من رغبتك في حذف هذه الوثيقة؟ سيتم مسحها نهائياً وتسجيل العملية في سجل الرقابة.' : 'Are you sure you want to delete this document?'}
+          onConfirm={async () => {
+            await deleteDocument(document.id);
+            setIsDeleteModalOpen(false);
+            onClose();
+          }}
+          onClose={() => setIsDeleteModalOpen(false)}
+        />
+      )}
     </div>
   );
 };

@@ -3,15 +3,48 @@ export type Theme = 'dark' | 'light' | 'system';
 
 export type UserRole = 'admin' | 'officer' | 'auditor' | 'viewer';
 
+export type PermissionKey =
+  | 'create'
+  | 'edit'
+  | 'delete'
+  | 'bulk_delete'
+  | 'export'
+  | 'audit'
+  | 'settings'
+  | 'scan'
+  | 'manage_folders'
+  | 'manage_users'
+  | 'backup';
+
 export interface User {
   id: string;
   name: string;
   email: string;
+  phone?: string;
   role: UserRole;
   department: string;
   avatar?: string;
+  password?: string;
+  status?: 'active' | 'suspended';
+  customPermissions?: Partial<Record<PermissionKey, boolean>>;
   twoFactorEnabled: boolean;
   createdAt: string;
+}
+
+export type RolePermissionsMap = Record<UserRole, Record<PermissionKey, boolean>>;
+
+export interface ArchiveFolder {
+  id: string;
+  code: string;
+  name: string;
+  description: string;
+  category: string;
+  department: string;
+  color: string;
+  icon?: string;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
 }
 
 export type DocumentClassification = 'public' | 'internal' | 'confidential' | 'top_secret';
@@ -42,6 +75,8 @@ export interface ArchiveDocument {
   description: string;
   category: string;
   department: string;
+  folderId?: string;
+  folderName?: string;
   classification: DocumentClassification;
   status: DocumentStatus;
   physicalLocation: string; // e.g. Archive Wing A - Shelf 04 - Box 18
@@ -62,7 +97,7 @@ export interface AuditLogEntry {
   timestamp: string;
   userId: string;
   userName: string;
-  action: 'CREATE' | 'UPDATE' | 'DELETE' | 'VIEW' | 'EXPORT' | 'SCAN' | 'BACKUP' | 'RESTORE' | 'LOGIN' | 'AUTH_2FA';
+  action: 'CREATE' | 'UPDATE' | 'DELETE' | 'VIEW' | 'EXPORT' | 'SCAN' | 'BACKUP' | 'RESTORE' | 'LOGIN' | 'LOGOUT' | 'AUTH_2FA' | 'CREATE_FOLDER' | 'UPDATE_FOLDER' | 'DELETE_FOLDER' | 'BULK_DELETE' | 'CREATE_USER' | 'UPDATE_USER' | 'DELETE_USER' | 'UPDATE_PERMISSIONS';
   targetResource: string;
   details: string;
   ipAddress: string;

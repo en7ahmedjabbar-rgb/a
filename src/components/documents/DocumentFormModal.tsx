@@ -20,7 +20,7 @@ export const DocumentFormModal: React.FC<DocumentFormModalProps> = ({
   onClose,
   onSuccess,
 }) => {
-  const { addDocument, updateDocument, t, language, currentUser } = useApp();
+  const { addDocument, updateDocument, folders, t, language, currentUser } = useApp();
   const isArabic = language === 'ar';
 
   const [code, setCode] = useState(
@@ -28,6 +28,9 @@ export const DocumentFormModal: React.FC<DocumentFormModalProps> = ({
   );
   const [title, setTitle] = useState(documentToEdit?.title || scannedData?.title || '');
   const [description, setDescription] = useState(documentToEdit?.description || '');
+  const [selectedFolderId, setSelectedFolderId] = useState<string>(
+    documentToEdit?.folderId || ''
+  );
   const [category, setCategory] = useState(documentToEdit?.category || 'العقود والاتفاقيات');
   const [department, setDepartment] = useState(documentToEdit?.department || currentUser.department || 'الشؤون القانونية');
   const [classification, setClassification] = useState<DocumentClassification>(
@@ -87,6 +90,9 @@ export const DocumentFormModal: React.FC<DocumentFormModalProps> = ({
         .map(t => t.trim())
         .filter(t => t.length > 0);
 
+      const selectedFolder = folders.find(f => f.id === selectedFolderId);
+      const folderName = selectedFolder?.name;
+
       if (documentToEdit) {
         await updateDocument(
           {
@@ -96,6 +102,8 @@ export const DocumentFormModal: React.FC<DocumentFormModalProps> = ({
             description,
             category,
             department,
+            folderId: selectedFolderId || undefined,
+            folderName: folderName || undefined,
             classification,
             status,
             physicalLocation,
@@ -114,6 +122,8 @@ export const DocumentFormModal: React.FC<DocumentFormModalProps> = ({
           description,
           category,
           department,
+          folderId: selectedFolderId || undefined,
+          folderName: folderName || undefined,
           classification,
           status,
           physicalLocation,
@@ -196,6 +206,25 @@ export const DocumentFormModal: React.FC<DocumentFormModalProps> = ({
             </div>
           </div>
 
+          {/* Row: Folder Selection */}
+          <div>
+            <label className="block text-xs font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
+              {t.selectFolder} ({isArabic ? 'المجلد الحاوي للوثيقة' : 'Target Archive Directory'})
+            </label>
+            <select
+              value={selectedFolderId}
+              onChange={e => setSelectedFolderId(e.target.value)}
+              className="w-full px-3 py-2 text-xs rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-blue-500 font-medium"
+            >
+              <option value="">{t.noFolder}</option>
+              {folders.map(f => (
+                <option key={f.id} value={f.id}>
+                  📁 {f.code} - {f.name} ({f.department})
+                </option>
+              ))}
+            </select>
+          </div>
+
           {/* Row 2: Category & Department */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
@@ -207,12 +236,14 @@ export const DocumentFormModal: React.FC<DocumentFormModalProps> = ({
                 onChange={e => setCategory(e.target.value)}
                 className="w-full px-3 py-2 text-xs rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-blue-500"
               >
-                <option value="العقود والاتفاقيات">العقود والاتفاقيات (Contracts)</option>
-                <option value="قرارات إدارية ومحاضر">قرارات إدارية ومحاضر (Decrees & Minutes)</option>
-                <option value="التقارير المالية والضريبية">التقارير المالية والضريبية (Financial)</option>
-                <option value="المخططات والتراخيص الهندسية">المخططات والتراخيص الهندسية (Engineering)</option>
-                <option value="شهادات الجودة والامتثال">شهادات الجودة والامتثال (ISO & Quality)</option>
-                <option value="ملفات الموارد البشرية">ملفات الموارد البشرية (HR & Personnel)</option>
+                <option value="أوامر جامعية ومحاضر مجلس الجامعة">أوامر جامعية ومحاضر مجلس الجامعة</option>
+                <option value="سجلات الخريجين والوثائق الأكاديمية">سجلات الخريجين والوثائق الأكاديمية</option>
+                <option value="أطاريح الدراسات العليا والبحوث">أطاريح الدراسات العليا والبحوث</option>
+                <option value="الترقيات العلمية وملفات التدريسيين">الترقيات العلمية وملفات التدريسيين</option>
+                <option value="المشاريع والإعمار الهندسي الجامعي">المشاريع والإعمار الهندسي الجامعي</option>
+                <option value="الموازنة الجامعية والمناقصات">الموازنة الجامعية والمناقصات</option>
+                <option value="شهادات الجودة والاعتماد الأكاديمي">شهادات الجودة والاعتماد الأكاديمي</option>
+                <option value="العقود والمذكرات الأكاديمية الدولية">العقود والمذكرات الأكاديمية الدولية</option>
               </select>
             </div>
             <div>
@@ -223,7 +254,7 @@ export const DocumentFormModal: React.FC<DocumentFormModalProps> = ({
                 type="text"
                 value={department}
                 onChange={e => setDepartment(e.target.value)}
-                placeholder={isArabic ? 'الشؤون القانونية / المالية' : 'Legal / Finance'}
+                placeholder={isArabic ? 'عمادة القبول والتسجيل / كلية الهندسة' : 'Deanship of Admissions / Faculty of Engineering'}
                 className="w-full px-3 py-2 text-xs rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-blue-500"
               />
             </div>

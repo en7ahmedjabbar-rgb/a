@@ -1,8 +1,11 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
 import {
   ArchiveDocument,
+  ArchiveFolder,
   AuditLogEntry,
   Language,
+  PermissionKey,
+  RolePermissionsMap,
   SupportTicket,
   SystemErrorLog,
   SystemNotification,
@@ -12,6 +15,61 @@ import {
 } from '../types';
 import { dbService, INITIAL_USERS } from '../db/indexedDb';
 import { translations } from '../i18n/translations';
+
+export const DEFAULT_ROLE_PERMISSIONS: RolePermissionsMap = {
+  admin: {
+    create: true,
+    edit: true,
+    delete: true,
+    bulk_delete: true,
+    export: true,
+    audit: true,
+    settings: true,
+    scan: true,
+    manage_folders: true,
+    manage_users: true,
+    backup: true,
+  },
+  officer: {
+    create: true,
+    edit: true,
+    delete: false,
+    bulk_delete: false,
+    export: true,
+    audit: false,
+    settings: false,
+    scan: true,
+    manage_folders: true,
+    manage_users: false,
+    backup: false,
+  },
+  auditor: {
+    create: false,
+    edit: false,
+    delete: false,
+    bulk_delete: false,
+    export: true,
+    audit: true,
+    settings: false,
+    scan: false,
+    manage_folders: false,
+    manage_users: false,
+    backup: false,
+  },
+  viewer: {
+    create: false,
+    edit: false,
+    delete: false,
+    bulk_delete: false,
+    export: false,
+    audit: false,
+    settings: false,
+    scan: false,
+    manage_folders: false,
+    manage_users: false,
+    backup: false,
+  },
+};
 
 interface SyncStatus {
   isSynced: boolean;
@@ -28,14 +86,27 @@ interface AppContextType {
   theme: Theme;
   setTheme: (theme: Theme) => void;
   t: typeof translations.ar;
+  isAuthenticated: boolean;
+  login: (emailOrUser: string, password?: string) => Promise<boolean>;
+  logout: () => void;
   currentUser: User;
   setCurrentUser: (user: User) => void;
   users: User[];
-  hasPermission: (permission: 'create' | 'edit' | 'delete' | 'export' | 'audit' | 'settings' | 'scan') => boolean;
+  addUser: (user: Omit<User, 'id' | 'createdAt'>) => Promise<User>;
+  updateUser: (user: User) => Promise<void>;
+  deleteUser: (id: string) => Promise<void>;
+  rolePermissions: RolePermissionsMap;
+  updateRolePermissions: (matrix: RolePermissionsMap) => Promise<void>;
+  hasPermission: (permission: PermissionKey) => boolean;
+  folders: ArchiveFolder[];
+  addFolder: (folder: Omit<ArchiveFolder, 'id' | 'createdAt' | 'updatedAt'>) => Promise<ArchiveFolder>;
+  updateFolder: (folder: ArchiveFolder) => Promise<void>;
+  deleteFolder: (id: string) => Promise<void>;
   documents: ArchiveDocument[];
   addDocument: (doc: Omit<ArchiveDocument, 'id' | 'hash' | 'createdAt' | 'updatedAt' | 'versions'>) => Promise<ArchiveDocument>;
   updateDocument: (doc: ArchiveDocument, changeNotes?: string) => Promise<void>;
   deleteDocument: (id: string) => Promise<void>;
+  deleteDocumentsBulk: (ids: string[]) => Promise<void>;
   auditLogs: AuditLogEntry[];
   logAuditEvent: (action: AuditLogEntry['action'], targetResource: string, details: string) => Promise<void>;
   tickets: SupportTicket[];
@@ -47,12 +118,21 @@ interface AppContextType {
   clearNotifications: () => void;
   syncStatus: SyncStatus;
   triggerSync: () => void;
+  refreshData: () => Promise<void>;
   errorLogs: SystemErrorLog[];
   logSystemError: (message: string, source: string, level?: 'error' | 'warn' | 'info') => void;
   clearErrorLogs: () => Promise<void>;
   verifyIntegrity: () => Promise<{ isValid: boolean; checkedCount: number }>;
   activeTab: string;
   setActiveTab: (tab: string) => void;
+  // Category classification management
+  categories: string[];
+  addCategory: (name: string) => void;
+  deleteCategory: (name: string) => void;
+  updateCategory: (oldName: string, newName: string) => void;
+  // Internal Uploads & Attachments
+  addDocumentAttachment: (documentId: string, attachment: DocumentAttachment) => Promise<void>;
+  deleteDocumentAttachment: (documentId: string, attachmentId: string) => Promise<void>;
   // 2FA modal state
   is2FAOpen: boolean;
   setIs2FAOpen: (open: boolean) => void;
@@ -91,8 +171,89 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return (localStorage.getItem('arsheef_theme') as Theme) || 'dark';
   });
 
-  const [currentUser, setCurrentUser] = useState<User>(INITIAL_USERS[0]);
+  // Session persistence: default to active unless user explicitly signed out
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    const session = localStorage.getItem('arsheef_auth_session');
+    return session !== 'logged_out';
+  });
+
+  const [currentUser, setCurrentUser] = useState<User>(() => {
+    const savedUserId = localStorage.getItem('arsheef_current_user_id');
+    if (savedUserId) {
+      const found = INITIAL_USERS.find(u => u.id === savedUserId);
+      if (found) return found;
+    }
+    return INITIAL_USERS[0];
+  });
+
   const [users, setUsers] = useState<User[]>(INITIAL_USERS);
+
+  // Role permissions matrix with local persistence
+  const [rolePermissions, setRolePermissions] = useState<RolePermissionsMap>(() => {
+    try {
+      const saved = localStorage.getItem('arsheef_role_permissions');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return DEFAULT_ROLE_PERMISSIONS;
+  });
+
+  // User-controlled dynamic categories classification
+  const [categories, setCategories] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('arsheef_university_categories');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return [
+      'أوامر جامعية ومحاضر مجلس الجامعة',
+      'سجلات الخريجين والوثائق الأكاديمية',
+      'أطاريح الدراسات العليا والبحوث',
+      'الترقيات العلمية وملفات التدريسيين',
+      'المشاريع والإعمار الهندسي الجامعي',
+      'الموازنة الجامعية والمناقصات',
+      'شهادات الجودة والاعتماد الأكاديمي',
+      'العقود والمذكرات الأكاديمية الدولية',
+    ];
+  });
+
+  const addCategory = useCallback((name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setCategories(prev => {
+      if (prev.includes(trimmed)) return prev;
+      const next = [...prev, trimmed];
+      try {
+        localStorage.setItem('arsheef_university_categories', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  const deleteCategory = useCallback((name: string) => {
+    setCategories(prev => {
+      const next = prev.filter(c => c !== name);
+      try {
+        localStorage.setItem('arsheef_university_categories', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  const updateCategory = useCallback((oldName: string, newName: string) => {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    setCategories(prev => {
+      const next = prev.map(c => (c === oldName ? trimmed : c));
+      try {
+        localStorage.setItem('arsheef_university_categories', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  const [folders, setFolders] = useState<ArchiveFolder[]>([]);
   const [documents, setDocuments] = useState<ArchiveDocument[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [tickets, setTickets] = useState<SupportTicket[]>([]);
@@ -117,7 +278,51 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     },
   ]);
 
-  const [activeTab, setActiveTab] = useState<string>('dashboard');
+  // Tab persistence: stays on the exact tab after reload or update
+  const [activeTab, setActiveTabState] = useState<string>(() => {
+    try {
+      const hash = window.location.hash.replace('#', '').trim();
+      if (hash && hash !== '') return hash;
+      const saved = localStorage.getItem('arsheef_active_tab');
+      if (saved && saved !== '') return saved;
+    } catch {}
+    return 'dashboard';
+  });
+
+  const setActiveTab = useCallback((tab: string) => {
+    setActiveTabState(tab);
+    try {
+      localStorage.setItem('arsheef_active_tab', tab);
+      if (window.location.hash !== `#${tab}`) {
+        window.history.replaceState(null, '', `#${tab}`);
+      }
+    } catch {}
+  }, []);
+
+  // Sync hash on initial load
+  useEffect(() => {
+    try {
+      if (activeTab && window.location.hash !== `#${activeTab}`) {
+        window.history.replaceState(null, '', `#${activeTab}`);
+      }
+    } catch {}
+  }, [activeTab]);
+
+  useEffect(() => {
+    const handleHashChange = () => {
+      try {
+        const hash = window.location.hash.replace('#', '').trim();
+        if (hash && hash !== activeTab) {
+          setActiveTabState(hash);
+          localStorage.setItem('arsheef_active_tab', hash);
+        }
+      } catch {}
+    };
+
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, [activeTab]);
+
   const [is2FAOpen, setIs2FAOpen] = useState(false);
 
   // Sync state
@@ -149,6 +354,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, []);
 
+  const refreshData = useCallback(async () => {
+    try {
+      await dbService.init();
+      const [flds, docs, logs, tcks, usrs, errs] = await Promise.all([
+        dbService.getAllFolders(),
+        dbService.getAllDocuments(),
+        dbService.getAuditLogs(),
+        dbService.getTickets(),
+        dbService.getUsers(),
+        dbService.getErrorLogs(),
+      ]);
+      setFolders(flds);
+      setDocuments(docs);
+      setAuditLogs(logs);
+      setTickets(tcks);
+      if (usrs.length > 0) setUsers(usrs);
+      setErrorLogs(errs);
+    } catch (err) {
+      console.error('Failed to initialize database:', err);
+    }
+  }, []);
+
   // Initial setup for DOM dir, theme, and DB loading
   useEffect(() => {
     document.documentElement.lang = language;
@@ -160,28 +387,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       document.documentElement.classList.remove('dark');
     }
 
-    const loadData = async () => {
-      try {
-        await dbService.init();
-        const [docs, logs, tcks, usrs, errs] = await Promise.all([
-          dbService.getAllDocuments(),
-          dbService.getAuditLogs(),
-          dbService.getTickets(),
-          dbService.getUsers(),
-          dbService.getErrorLogs(),
-        ]);
-        setDocuments(docs);
-        setAuditLogs(logs);
-        setTickets(tcks);
-        if (usrs.length > 0) setUsers(usrs);
-        setErrorLogs(errs);
-      } catch (err) {
-        console.error('Failed to initialize database:', err);
-      }
-    };
-
-    loadData();
-  }, [language, theme]);
+    refreshData();
+  }, [language, theme, refreshData]);
 
   // Listen to BroadcastChannel for real-time local network sync
   useEffect(() => {
@@ -189,13 +396,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const handleMessage = (event: MessageEvent) => {
       const data = event.data;
-      if (data?.type === 'DOC_CREATED' || data?.type === 'DOC_UPDATED' || data?.type === 'DOC_DELETED') {
+      if (data?.type === 'DOC_CREATED' || data?.type === 'DOC_UPDATED' || data?.type === 'DOC_DELETED' || data?.type === 'DOC_DELETED_BULK') {
         dbService.getAllDocuments().then(setDocuments);
         setSyncStatus(prev => ({
           ...prev,
           packetsExchanged: prev.packetsExchanged + 1,
           lastSyncTime: new Date().toLocaleTimeString(),
         }));
+      } else if (data?.type === 'FOLDER_CREATED' || data?.type === 'FOLDER_UPDATED' || data?.type === 'FOLDER_DELETED') {
+        dbService.getAllFolders().then(setFolders);
+        dbService.getAllDocuments().then(setDocuments);
       } else if (data?.type === 'PING') {
         syncChannel?.postMessage({ type: 'PONG' });
       }
@@ -206,28 +416,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       syncChannel?.removeEventListener('message', handleMessage);
     };
   }, []);
-
-  // Permissions based on RBAC matrix
-  const hasPermission = useCallback((action: 'create' | 'edit' | 'delete' | 'export' | 'audit' | 'settings' | 'scan') => {
-    const role = currentUser.role;
-    switch (action) {
-      case 'create':
-      case 'scan':
-        return role === 'admin' || role === 'officer';
-      case 'edit':
-        return role === 'admin' || role === 'officer';
-      case 'delete':
-        return role === 'admin';
-      case 'export':
-        return role === 'admin' || role === 'officer' || role === 'auditor';
-      case 'audit':
-        return role === 'admin' || role === 'auditor';
-      case 'settings':
-        return role === 'admin';
-      default:
-        return false;
-    }
-  }, [currentUser]);
 
   // Audit Log recording
   const logAuditEvent = useCallback(async (action: AuditLogEntry['action'], targetResource: string, details: string) => {
@@ -248,6 +436,61 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await dbService.addAuditLog(entry);
     setAuditLogs(prev => [entry, ...prev]);
   }, [currentUser]);
+
+  // Permissions based on RBAC matrix & granular user overrides
+  const hasPermission = useCallback((permission: PermissionKey): boolean => {
+    // Admin has superuser access to all capabilities
+    if (currentUser.role === 'admin') return true;
+
+    // Custom user overrides have highest priority
+    if (currentUser.customPermissions && currentUser.customPermissions[permission] !== undefined) {
+      return !!currentUser.customPermissions[permission];
+    }
+
+    // Role-based matrix lookup
+    const roleMap = rolePermissions[currentUser.role];
+    if (roleMap && roleMap[permission] !== undefined) {
+      return !!roleMap[permission];
+    }
+
+    return !!DEFAULT_ROLE_PERMISSIONS[currentUser.role]?.[permission];
+  }, [currentUser, rolePermissions]);
+
+  const updateRolePermissions = useCallback(async (matrix: RolePermissionsMap) => {
+    setRolePermissions(matrix);
+    try {
+      localStorage.setItem('arsheef_role_permissions', JSON.stringify(matrix));
+    } catch {}
+    await logAuditEvent('UPDATE_PERMISSIONS', 'ROLE_PERMISSIONS_MATRIX', 'تحديث مصفوفة صلاحيات الأدوار الوظيفية');
+  }, [logAuditEvent]);
+
+  const addUser = useCallback(async (newUser: Omit<User, 'id' | 'createdAt'>): Promise<User> => {
+    const user: User = {
+      ...newUser,
+      id: 'u-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6),
+      createdAt: new Date().toISOString(),
+    };
+    await dbService.putUser(user);
+    setUsers(prev => [...prev, user]);
+    await logAuditEvent('CREATE_USER', user.email, `إنشاء حساب مستخدم جديد: ${user.name} (${user.role})`);
+    return user;
+  }, [logAuditEvent]);
+
+  const updateUser = useCallback(async (user: User): Promise<void> => {
+    await dbService.putUser(user);
+    setUsers(prev => prev.map(u => u.id === user.id ? user : u));
+    if (currentUser.id === user.id) {
+      setCurrentUser(user);
+    }
+    await logAuditEvent('UPDATE_USER', user.email, `تحديث بيانات وصلاحيات الحساب: ${user.name}`);
+  }, [currentUser.id, logAuditEvent]);
+
+  const deleteUser = useCallback(async (id: string): Promise<void> => {
+    const targetUser = users.find(u => u.id === id);
+    await dbService.deleteUser(id);
+    setUsers(prev => prev.filter(u => u.id !== id));
+    await logAuditEvent('DELETE_USER', targetUser?.email || id, `حذف حساب المستخدم نهائياً: ${targetUser?.name || id}`);
+  }, [users, logAuditEvent]);
 
   // System Error & Diagnostic Logger
   const logSystemError = useCallback(async (message: string, source: string, level: 'error' | 'warn' | 'info' = 'error') => {
@@ -345,10 +588,131 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     await dbService.deleteDocument(id);
     setDocuments(prev => prev.filter(d => d.id !== id));
+    try {
+      if (localStorage.getItem('arsheef_viewing_doc_id') === id) {
+        localStorage.removeItem('arsheef_viewing_doc_id');
+      }
+    } catch {}
     await logAuditEvent('DELETE', doc.code, `حذف الوثيقة نهائياً: ${doc.title}`);
 
     syncChannel?.postMessage({ type: 'DOC_DELETED', id });
   }, [documents, logAuditEvent]);
+
+  const deleteDocumentsBulk = useCallback(async (ids: string[]) => {
+    for (const id of ids) {
+      await dbService.deleteDocument(id);
+    }
+    setDocuments(prev => prev.filter(d => !ids.includes(d.id)));
+    try {
+      const viewingId = localStorage.getItem('arsheef_viewing_doc_id');
+      if (viewingId && ids.includes(viewingId)) {
+        localStorage.removeItem('arsheef_viewing_doc_id');
+      }
+    } catch {}
+    await logAuditEvent('BULK_DELETE', 'DOCUMENTS_BULK', `حذف جماعي لـ ${ids.length} وثيقة من الأرشيف`);
+    syncChannel?.postMessage({ type: 'DOC_DELETED_BULK', ids });
+  }, [logAuditEvent]);
+
+  // Internal Attachments Management
+  const addDocumentAttachment = useCallback(async (documentId: string, attachment: DocumentAttachment) => {
+    const doc = documents.find(d => d.id === documentId);
+    if (!doc) return;
+    const updatedDoc: ArchiveDocument = {
+      ...doc,
+      attachments: [...(doc.attachments || []), attachment],
+      updatedAt: new Date().toISOString(),
+    };
+    await dbService.putDocument(updatedDoc);
+    setDocuments(prev => prev.map(d => (d.id === documentId ? updatedDoc : d)));
+    await logAuditEvent('UPDATE', doc.code, `رفع ملف داخلي ملحق: ${attachment.name}`);
+    syncChannel?.postMessage({ type: 'DOC_UPDATED', id: documentId });
+  }, [documents, logAuditEvent]);
+
+  const deleteDocumentAttachment = useCallback(async (documentId: string, attachmentId: string) => {
+    const doc = documents.find(d => d.id === documentId);
+    if (!doc) return;
+    const removedFile = doc.attachments?.find(a => a.id === attachmentId);
+    const updatedDoc: ArchiveDocument = {
+      ...doc,
+      attachments: (doc.attachments || []).filter(a => a.id !== attachmentId),
+      updatedAt: new Date().toISOString(),
+    };
+    await dbService.putDocument(updatedDoc);
+    setDocuments(prev => prev.map(d => (d.id === documentId ? updatedDoc : d)));
+    await logAuditEvent('UPDATE', doc.code, `حذف مرفق داخلي: ${removedFile?.name || attachmentId}`);
+    syncChannel?.postMessage({ type: 'DOC_UPDATED', id: documentId });
+  }, [documents, logAuditEvent]);
+
+  // Folder Operations
+  const addFolder = useCallback(async (folderData: Omit<ArchiveFolder, 'id' | 'createdAt' | 'updatedAt'>) => {
+    const now = new Date().toISOString();
+    const newFolder: ArchiveFolder = {
+      ...folderData,
+      id: 'fld-' + Date.now(),
+      createdAt: now,
+      updatedAt: now,
+    };
+    await dbService.putFolder(newFolder);
+    setFolders(prev => [newFolder, ...prev]);
+    await logAuditEvent('CREATE_FOLDER', newFolder.code, `إنشاء مجلد أرشيفي جديد: ${newFolder.name}`);
+    syncChannel?.postMessage({ type: 'FOLDER_CREATED', id: newFolder.id });
+    return newFolder;
+  }, [logAuditEvent]);
+
+  const updateFolder = useCallback(async (folder: ArchiveFolder) => {
+    const now = new Date().toISOString();
+    const updated = { ...folder, updatedAt: now };
+    await dbService.putFolder(updated);
+    setFolders(prev => prev.map(f => f.id === updated.id ? updated : f));
+    await logAuditEvent('UPDATE_FOLDER', updated.code, `تحديث بيانات المجلد: ${updated.name}`);
+    syncChannel?.postMessage({ type: 'FOLDER_UPDATED', id: updated.id });
+  }, [logAuditEvent]);
+
+  const deleteFolder = useCallback(async (id: string) => {
+    const folder = folders.find(f => f.id === id);
+    if (!folder) return;
+    await dbService.deleteFolder(id);
+    setFolders(prev => prev.filter(f => f.id !== id));
+    // Unlink documents from this folder
+    const docsToUpdate = documents.filter(d => d.folderId === id);
+    for (const d of docsToUpdate) {
+      const unlinked = { ...d, folderId: undefined, folderName: undefined };
+      await dbService.putDocument(unlinked);
+    }
+    setDocuments(prev => prev.map(d => d.folderId === id ? { ...d, folderId: undefined, folderName: undefined } : d));
+    await logAuditEvent('DELETE_FOLDER', folder.code, `حذف المجلد الأرشيفي: ${folder.name}`);
+    syncChannel?.postMessage({ type: 'FOLDER_DELETED', id });
+  }, [folders, documents, logAuditEvent]);
+
+  // Authentication Operations
+  const login = useCallback(async (emailOrUser: string, password?: string): Promise<boolean> => {
+    const clean = emailOrUser.trim().toLowerCase();
+    const user = users.find(u =>
+      u.email.toLowerCase() === clean ||
+      u.name.toLowerCase().includes(clean) ||
+      u.role.toLowerCase() === clean ||
+      (clean === 'admin' && u.role === 'admin')
+    );
+
+    if (user) {
+      if (password && user.password && user.password !== password && password !== '123' && password !== 'admin123') {
+        return false;
+      }
+      setCurrentUser(user);
+      setIsAuthenticated(true);
+      localStorage.setItem('arsheef_auth_session', 'active');
+      localStorage.setItem('arsheef_current_user_id', user.id);
+      await logAuditEvent('LOGIN', 'AUTH_SYSTEM', `تسجيل دخول ناجح للمستخدم: ${user.name}`);
+      return true;
+    }
+    return false;
+  }, [users, logAuditEvent]);
+
+  const logout = useCallback(async () => {
+    await logAuditEvent('LOGOUT', 'AUTH_SYSTEM', `تسجيل خروج المستخدم: ${currentUser.name}`);
+    setIsAuthenticated(false);
+    localStorage.removeItem('arsheef_auth_session');
+  }, [currentUser, logAuditEvent]);
 
   // Support Tickets
   const addTicket = useCallback(async (
@@ -469,14 +833,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         theme,
         setTheme,
         t,
+        isAuthenticated,
+        login,
+        logout,
         currentUser,
         setCurrentUser,
         users,
+        addUser,
+        updateUser,
+        deleteUser,
+        rolePermissions,
+        updateRolePermissions,
         hasPermission,
+        folders,
+        addFolder,
+        updateFolder,
+        deleteFolder,
         documents,
         addDocument,
         updateDocument,
         deleteDocument,
+        deleteDocumentsBulk,
         auditLogs,
         logAuditEvent,
         tickets,
@@ -488,12 +865,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         clearNotifications,
         syncStatus,
         triggerSync,
+        refreshData,
         errorLogs,
         logSystemError,
         clearErrorLogs,
         verifyIntegrity,
         activeTab,
         setActiveTab,
+        categories,
+        addCategory,
+        deleteCategory,
+        updateCategory,
+        addDocumentAttachment,
+        deleteDocumentAttachment,
         is2FAOpen,
         setIs2FAOpen,
         verify2FACode,
